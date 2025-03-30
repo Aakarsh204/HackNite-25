@@ -6,6 +6,9 @@ import sys
 import os
 import pandas as pd
 from datetime import datetime
+from eyeTracking import EyeProcessor
+from facial_expressions import EmotionProcessor
+from streamlit_webrtc import webrtc_streamer
 
 # Set page configuration
 st.set_page_config(
@@ -30,12 +33,14 @@ if 'selected_answer' not in st.session_state:
     st.session_state.selected_answer = None
 if 'show_reason' not in st.session_state:
     st.session_state.show_reason = False
+if 'engagement_data' not in st.session_state:
+    st.session_state.engagement_data = []
 
 # Navigation sidebar
 st.sidebar.title("AI Learning Platform")
 page = st.sidebar.radio(
     "Navigate", 
-    ["Home", "Learning Roadmap", "Learning Resources", "Quiz"]
+    ["Home", "Learning Roadmap", "Learning Resources", "Quiz", "Engagement Monitor"]
 )
 
 # Helper function for API calls
@@ -283,3 +288,99 @@ elif page == "Quiz":
                             st.session_state.score += 1
                         
                         st.rerun()
+
+# Engagement Monitor page
+elif page == "Engagement Monitor":
+    st.title("Student Engagement Monitor")
+    st.markdown("""
+    This feature helps track your engagement during learning sessions by monitoring:
+    - Eye tracking for reading detection
+    - Facial expressions for emotional state
+    """)
+    
+    # Create two columns for the video feeds
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Eye Tracking")
+        ctx_eye = webrtc_streamer(
+            key="eye-tracker",
+            video_processor_factory=EyeProcessor,
+            frontend_rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        )
+        
+        if ctx_eye.video_processor:
+            st.subheader("Reading Status Log")
+            if st.button("Clear Eye Tracking Log"):
+                ctx_eye.video_processor.status_log = []
+            
+            if ctx_eye.video_processor.status_log:
+                log_text = "\n".join(
+                    [f"{status[1]} - {status[0]}" 
+                     for status in ctx_eye.video_processor.status_log[-10:]]
+                )
+                st.text_area("Eye Tracking Log", value=log_text, height=150)
+    
+    with col2:
+        st.subheader("Emotion Analysis")
+        ctx_emotion = webrtc_streamer(
+            key="emotion-tracker",
+            video_processor_factory=EmotionProcessor,
+            frontend_rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        )
+        
+        if ctx_emotion.video_processor:
+            st.subheader("Emotion Log")
+            if st.button("Clear Emotion Log"):
+                ctx_emotion.video_processor.emotion_log = []
+            
+            if ctx_emotion.video_processor.emotion_log:
+                log_text = "\n".join(
+                    [f"{status[1]} - {status[0]}" 
+                     for status in ctx_emotion.video_processor.emotion_log[-10:]]
+                )
+                st.text_area("Emotion Log", value=log_text, height=150)
+    
+    # Engagement Analytics
+    st.subheader("Engagement Analytics")
+    
+    if ctx_eye.video_processor and ctx_emotion.video_processor:
+        # Calculate reading percentage
+        if ctx_eye.video_processor.status_log:
+            reading_count = sum(1 for status in ctx_eye.video_processor.status_log if status[0] == "Reading")
+            total_count = len(ctx_eye.video_processor.status_log)
+            reading_percentage = (reading_count / total_count) * 100 if total_count > 0 else 0
+            
+            st.metric("Reading Engagement", f"{reading_percentage:.1f}%")
+        
+        # Calculate emotion distribution
+        if ctx_emotion.video_processor.emotion_log:
+            emotions = [status[0] for status in ctx_emotion.video_processor.emotion_log]
+            emotion_counts = pd.Series(emotions).value_counts()
+            
+            st.write("Emotion Distribution")
+            st.bar_chart(emotion_counts)
+            
+            # Engagement score based on positive emotions
+            positive_emotions = ['happy', 'neutral']
+            positive_count = sum(1 for emotion in emotions if emotion in positive_emotions)
+            emotion_percentage = (positive_count / len(emotions)) * 100 if emotions else 0
+            
+            st.metric("Emotional Engagement", f"{emotion_percentage:.1f}%")
+    
+    # Save engagement data
+    if st.button("Save Engagement Data"):
+        engagement_data = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "reading_percentage": reading_percentage if 'reading_percentage' in locals() else 0,
+            "emotion_percentage": emotion_percentage if 'emotion_percentage' in locals() else 0,
+            "emotion_distribution": emotion_counts.to_dict() if 'emotion_counts' in locals() else {}
+        }
+        st.session_state.engagement_data.append(engagement_data)
+        st.success("Engagement data saved!")
+    
+    # Display historical engagement data
+    if st.session_state.engagement_data:
+        st.subheader("Historical Engagement Data")
+        df = pd.DataFrame(st.session_state.engagement_data)
+        st.line_chart(df[['reading_percentage', 'emotion_percentage']])
