@@ -1,12 +1,12 @@
 # HackNite’25
 
-##Problem Statement:
+## Problem Statement:
 
 Education
 
 Develop a personalized, Al-driven educational platform that dynamically adapts learning pathways and content delivery based on real-time student engagement, emotional state, and cognitive load, captured through multimodal data (e.g., eye-tracking, facial expression analysis, speech patterns, interaction logs). The challenge lies in creating a system that not only optimizes knowledge acquisition but also fosters intrinsic motivation and emotional well-being, while maintaining ethical considerations regarding student privacy and data usage.
 
-##Solution:
+## Solution:
 
 An AI-powered learning platform that provides personalized learning experiences through dynamic content generation, interactive quizzes, and adaptive learning paths.
 
