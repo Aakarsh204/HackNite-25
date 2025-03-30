@@ -2,147 +2,168 @@ import cv2
 import dlib
 import numpy as np
 import time
+import av
+import streamlit as st
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+from streamlit.components.v1 import html
 
-# Initialize dlib's face detector and facial landmark predictor
+# Initialize dlib components
 detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")  # Download from dlib repo
+predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
-# Indices for eye landmarks (from dlib's 68 landmark model)
+# Constants
 LEFT_EYE_INDICES = list(range(36, 42))
 RIGHT_EYE_INDICES = list(range(42, 48))
 
-def get_eye_center(eye_points):
-    """Calculate the center of the eye by averaging landmark points."""
-    x = sum([p[0] for p in eye_points]) // len(eye_points)
-    y = sum([p[1] for p in eye_points]) // len(eye_points)
-    return (x, y)
+class EyeProcessor(VideoProcessorBase):
+    def __init__(self):
+        super().__init__()
+        self.prev_left_pupil = None
+        self.prev_right_pupil = None
+        self.reading_status = False
+        self.last_update = time.time()
+        self.status_log = []
+        self.last_face_time = time.time()
 
-def get_pupil_position(eye_region, eye_center):
-    """Find the darkest region (likely pupil) in the eye."""
-    gray_eye = cv2.cvtColor(eye_region, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray_eye, 50, 255, cv2.THRESH_BINARY_INV)
-   
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        max_contour = max(contours, key=cv2.contourArea)
-        M = cv2.moments(max_contour)
-        if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-            return (eye_center[0] + cx, eye_center[1] + cy)
-    return eye_center  # Fallback to center if no pupil found
+    def get_eye_center(self, eye_points):
+        x = sum([p[0] for p in eye_points]) // len(eye_points)
+        y = sum([p[1] for p in eye_points]) // len(eye_points)
+        return (x, y)
 
-def is_reading(left_pupil, right_pupil, prev_left_pupil, prev_right_pupil, frame_width):
-    """
-    Determine if the user is likely reading based on eye movements.
-    Reading typically involves horizontal eye movements with minimal vertical change.
-    """
-    if prev_left_pupil is None or prev_right_pupil is None:
-        return False
-    
-    # Calculate horizontal and vertical movement for both eyes
-    left_h_movement = abs(left_pupil[0] - prev_left_pupil[0])
-    left_v_movement = abs(left_pupil[1] - prev_left_pupil[1])
-    right_h_movement = abs(right_pupil[0] - prev_right_pupil[0])
-    right_v_movement = abs(right_pupil[1] - prev_right_pupil[1])
-    
-    # Reading patterns typically show:
-    # 1. Some horizontal movement (saccades)
-    # 2. Minimal vertical movement
-    # 3. Both eyes move in coordinated way
-    
-    avg_h_movement = (left_h_movement + right_h_movement) / 2
-    avg_v_movement = (left_v_movement + right_v_movement) / 2
-    
-    # Thresholds for reading detection
-    min_h_movement = 2  # Minimum horizontal movement to detect reading
-    max_h_movement = frame_width // 10  # Maximum reasonable horizontal movement
-    max_v_movement = 5  # Maximum vertical movement (should be small during reading)
-    
-    return (min_h_movement <= avg_h_movement <= max_h_movement) and (avg_v_movement <= max_v_movement)
+    def get_pupil_position(self, eye_region, eye_center):
+        gray_eye = cv2.cvtColor(eye_region, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray_eye, 50, 255, cv2.THRESH_BINARY_INV)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            max_contour = max(contours, key=cv2.contourArea)
+            M = cv2.moments(max_contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                return (eye_center[0] + cx, eye_center[1] + cy)
+        return eye_center
 
-# Variables for reading detection
-prev_left_pupil = None
-prev_right_pupil = None
-last_print_time = time.time()
-reading_status = False
+    def is_reading(self, left_pupil, right_pupil, frame_width):
+        if not self.prev_left_pupil or not self.prev_right_pupil:
+            return False
 
-cap = cv2.VideoCapture(0)
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    
-    frame_width = frame.shape[1]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    faces = detector(gray)
-    
-    current_left_pupil = None
-    current_right_pupil = None
-    
-    for face in faces:
-        landmarks = predictor(gray, face)
-        # Extract eye landmarks
-        left_eye_points = [(landmarks.part(i).x, landmarks.part(i).y) for i in LEFT_EYE_INDICES]
-        right_eye_points = [(landmarks.part(i).x, landmarks.part(i).y) for i in RIGHT_EYE_INDICES]
-        left_center = get_eye_center(left_eye_points)
-        right_center = get_eye_center(right_eye_points)
+        left_h = abs(left_pupil[0] - self.prev_left_pupil[0])
+        left_v = abs(left_pupil[1] - self.prev_left_pupil[1])
+        right_h = abs(right_pupil[0] - self.prev_right_pupil[0])
+        right_v = abs(right_pupil[1] - self.prev_right_pupil[1])
+
+        avg_h = (left_h + right_h) / 2
+        avg_v = (left_v + right_v) / 2
+
+        return (2 <= avg_h <= frame_width // 10) and (avg_v <= 5)
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray)
         
-        # Get region around eye centers
-        left_eye_region = frame[
-            max(0, left_center[1]-10):min(frame.shape[0], left_center[1]+10), 
-            max(0, left_center[0]-10):min(frame.shape[1], left_center[0]+10)
-        ]
-        right_eye_region = frame[
-            max(0, right_center[1]-10):min(frame.shape[0], right_center[1]+10), 
-            max(0, right_center[0]-10):min(frame.shape[1], right_center[0]+10)
-        ]
-        
-        # Skip if regions are too small
-        if left_eye_region.size == 0 or right_eye_region.size == 0:
-            continue
+        if len(faces) > 0:
+            self.last_face_time = time.time()
+
+        current_left_pupil = None
+        current_right_pupil = None
+
+        for face in faces:
+            landmarks = predictor(gray, face)
             
-        # Get pupil positions
-        left_pupil = get_pupil_position(left_eye_region, left_center)
-        right_pupil = get_pupil_position(right_eye_region, right_center)
-        
-        current_left_pupil = left_pupil
-        current_right_pupil = right_pupil
-        
-        # Draw eyes and pupils
-        cv2.circle(frame, left_center, 5, (0, 255, 0), -1)
-        cv2.circle(frame, right_center, 5, (0, 255, 0), -1)
-        cv2.circle(frame, left_pupil, 3, (0, 0, 255), -1)
-        cv2.circle(frame, right_pupil, 3, (0, 0, 255), -1)
-    
-    # Check reading status and print every second
-    current_time = time.time()
-    if current_time - last_print_time >= 1.0:  # Print every second
-        if current_left_pupil and current_right_pupil and prev_left_pupil and prev_right_pupil:
-            reading_status = is_reading(current_left_pupil, current_right_pupil, 
-                                        prev_left_pupil, prev_right_pupil, frame_width)
-            
-            if reading_status:
-                print("yes")
-            else:
-                print("no")
-                
-        last_print_time = current_time
-    
-    # Store current pupil positions for next frame
-    if current_left_pupil and current_right_pupil:
-        prev_left_pupil = current_left_pupil
-        prev_right_pupil = current_right_pupil
-    
-    # Display reading status on frame
-    if reading_status:
-        cv2.putText(frame, "Reading: YES", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    else:
-        cv2.putText(frame, "Reading: NO", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    
-    cv2.imshow("Eye Tracking", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+            # Left eye processing
+            left_eye_points = [(landmarks.part(i).x, landmarks.part(i).y) 
+                             for i in LEFT_EYE_INDICES]
+            left_center = self.get_eye_center(left_eye_points)
+            left_region = img[
+                max(0, left_center[1]-10):min(img.shape[0], left_center[1]+10),
+                max(0, left_center[0]-10):min(img.shape[1], left_center[0]+10)
+            ]
+            if left_region.size > 0:
+                left_pupil = self.get_pupil_position(left_region, left_center)
+                current_left_pupil = left_pupil
+                cv2.circle(img, left_center, 5, (0, 255, 0), -1)
+                cv2.circle(img, left_pupil, 3, (0, 0, 255), -1)
 
-cap.release()
-cv2.destroyAllWindows()
+            # Right eye processing
+            right_eye_points = [(landmarks.part(i).x, landmarks.part(i).y) 
+                              for i in RIGHT_EYE_INDICES]
+            right_center = self.get_eye_center(right_eye_points)
+            right_region = img[
+                max(0, right_center[1]-10):min(img.shape[0], right_center[1]+10),
+                max(0, right_center[0]-10):min(img.shape[1], right_center[0]+10)
+            ]
+            if right_region.size > 0:
+                right_pupil = self.get_pupil_position(right_region, right_center)
+                current_right_pupil = right_pupil
+                cv2.circle(img, right_center, 5, (0, 255, 0), -1)
+                cv2.circle(img, right_pupil, 3, (0, 0, 255), -1)
+
+        if current_left_pupil and current_right_pupil:
+            self.reading_status = self.is_reading(current_left_pupil, 
+                                                current_right_pupil, 
+                                                img.shape[1])
+            self.prev_left_pupil = current_left_pupil
+            self.prev_right_pupil = current_right_pupil
+
+            if time.time() - self.last_update >= 1:
+                self.status_log.append(
+                    ("Reading" if self.reading_status else "Not reading", 
+                     time.strftime("%H:%M:%S")))
+                self.last_update = time.time()
+
+        color = (0, 255, 0) if self.reading_status else (0, 0, 255)
+        cv2.putText(img, f"Reading: {'YES' if self.reading_status else 'NO'}", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+def main():
+    st.title("Real-time Reading Detection 👁️")
+    st.markdown("""
+    ## This app detects reading behavior using eye movement analysis
+    - Uses dlib's facial landmark detection
+    - Tracks pupil movements
+    - Identifies characteristic reading patterns
+    """)
+    
+    # Initialize session state
+    if 'alert_shown' not in st.session_state:
+        st.session_state.alert_shown = False
+
+    ctx = webrtc_streamer(
+        key="eye-tracker",
+        video_processor_factory=EyeProcessor,
+        frontend_rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+    
+    if ctx.video_processor:
+        st.subheader("Reading Status Log")
+        if st.button("Clear Log"):
+            ctx.video_processor.status_log = []
+        
+        if ctx.video_processor.status_log:
+            log_text = "\n".join(
+                [f"{status[1]} - {status[0]}" 
+                 for status in ctx.video_processor.status_log[-10:]]
+            )
+            st.text_area("Log", value=log_text, height=200, key="log_display")
+        
+        # Alert system
+        absence_duration = time.time() - ctx.video_processor.last_face_time
+        if absence_duration > 10 and not st.session_state.alert_shown:
+            # Inject JavaScript alert
+            html_code = """
+            <script>
+            window.alert("⚠️ Please look back at the screen! You haven't been looking for 10 seconds.");
+            </script>
+            """
+            html(html_code, width=0, height=0)
+            st.session_state.alert_shown = True  # Corrected typo from alert_shown
+            
+        # Reset alert when user returns
+        if absence_duration < 2 and st.session_state.alert_shown:
+            st.session_state.alert_shown = False
+
+if __name__ == "__main__":
+    main()
