@@ -9,6 +9,7 @@ Develop a personalized, Al-driven educational platform that dynamically adapts l
 Solution:
 
 An AI-powered learning platform that provides personalized learning experiences through dynamic content generation, interactive quizzes, and adaptive learning paths.
+
 Solution Link: (https://youtu.be/y5tPg5xu3kY)
 
 ## Features
